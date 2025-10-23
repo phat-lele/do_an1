@@ -271,6 +271,98 @@ BEGIN
     SELECT COUNT(*) AS total_customers FROM users WHERE role = 'customer';
 END;
 GO
+-- Trigger kiểm tra category_id trước khi thêm sách
+CREATE TRIGGER trg_check_category_before_insert
+ON books
+INSTEAD OF INSERT
+AS
+BEGIN
+    -- Kiểm tra category có tồn tại hay không
+    IF EXISTS (
+        SELECT 1 FROM inserted i
+        WHERE NOT EXISTS (
+            SELECT 1 FROM categories c WHERE c.id = i.category_id
+        )
+    )
+    BEGIN
+        RAISERROR (N'Không thể thêm sách vì category_id không tồn tại trong bảng categories!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    -- Nếu hợp lệ thì insert bình thường
+    INSERT INTO books (category_id, title, author, price, stock, image, created_at, updated_at)
+    SELECT category_id, title, author, price, stock, image, created_at, updated_at
+    FROM inserted;
+END;
+GO
+--- kiểm tra và cộng thêm số lượng sách
+CREATE TRIGGER trg_add_stock
+ON books
+INSTEAD OF UPDATE
+AS
+BEGIN
+    -- Nếu cố nhập số âm thì chặn
+    IF EXISTS (SELECT 1 FROM inserted WHERE stock < 0)
+    BEGIN
+        RAISERROR (N'Số lượng thêm vào không được âm!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    -- Nếu book_id không tồn tại trong bảng gốc -> chặn
+    IF EXISTS (
+        SELECT 1 FROM inserted i
+        WHERE NOT EXISTS (SELECT 1 FROM books b WHERE b.id = i.id)
+    )
+    BEGIN
+        RAISERROR (N'Không tồn tại sách để thêm số lượng!', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    -- Nếu hợp lệ -> cộng dồn số lượng
+    UPDATE books
+    SET stock = b.stock + i.stock,   -- cộng thêm số sách được nhập vào
+        updated_at = GETDATE()
+    FROM books b
+    INNER JOIN inserted i ON b.id = i.id;
+END;
+GO
+-- thanh toán thì trừ số lượng ko 
+CREATE TRIGGER trg_update_stock_after_paid
+ON orders
+AFTER UPDATE
+AS
+BEGIN
+    IF EXISTS(SELECT * FROM inserted WHERE status = 'paid')
+    BEGIN
+        UPDATE b
+        SET b.stock = b.stock - oi.quantity
+        FROM books b
+        JOIN order_items oi ON b.id = oi.book_id
+        JOIN inserted i ON oi.order_id = i.id
+        WHERE i.status = 'paid';
+    END
+END;
+GO
+-- hủy đơn thì cộng trờ lại kho 
+CREATE TRIGGER trg_update_stock_after_cancel
+ON orders
+AFTER UPDATE
+AS
+BEGIN
+    IF EXISTS(SELECT * FROM inserted WHERE status = 'cancel')
+    BEGIN
+        UPDATE b
+        SET b.stock = b.stock + oi.quantity
+        FROM books b
+        JOIN order_items oi ON b.id = oi.book_id
+        JOIN inserted i ON oi.order_id = i.id
+        WHERE i.status = 'cancel';
+    END
+END;
+GO
 
 
 -----------------------------------------------------------
@@ -289,6 +381,18 @@ INSERT INTO [dbo].[categories] ([name], [description]) VALUES
 (N'Sách Tâm lý - Tình cảm', N'Sách về tâm lý, tình cảm, hôn nhân, gia đình và phát triển cảm xúc'),
 (N'Sách Học thuật - Giáo trình', N'Tài liệu chuyên ngành, giáo trình nghiên cứu và sách học thuật');
 GO
+--- user
+INSERT INTO users (username, password, email, role)
+VALUES
+-- User 1: adminpht
+-- Mật khẩu gốc: phattht123
+('adminphat', '$2y$10$edtAAbJ3fZHLRMhlew/u5O047rnNW.tEGUCDPgTe6JVgUbqmJ/gdi', 'admin@example.com', 'admin');
+
+-- User 2: khách hàng
+-- Mật khẩu gốc: phattht123insert into users (username, password, email, role)
+VALUES
+('phatle', '$2y$10$edtAAbJ3fZHLRMhlew/u5O047rnNW.tEGUCDPgTe6JVgUbqmJ/gdi', 'john@example.com', 'customer');
+
 
 ---- import csdl về sách vào gồm 380 cuốn 
 -- =============================================
